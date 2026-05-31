@@ -1,0 +1,18 @@
+name = "m365-copilot-openai-worker"
+main = "src/index.ts"
+compatibility_date = "2026-05-31"
+workers_dev = true
+
+[vars]
+DEFAULT_MODEL = "copilot-5.5-fast-response"
+COPILOT_LOCALE = "zh-cn"
+COPILOT_MARKET = "en-us"
+COPILOT_TIMEZONE = "Asia/Shanghai"
+
+# Optional: persist refreshed Microsoft refresh tokens.
+# Create with:
+#   npx wrangler kv namespace create COPILOT_TOKEN_KV
+# Then uncomment and fill in the generated id.
+# [[kv_namespaces]]
+# binding = "COPILOT_TOKEN_KV"
+# id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"

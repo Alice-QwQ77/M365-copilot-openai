@@ -8,6 +8,7 @@ DEFAULT_MODEL = "copilot-5.5-fast-response"
 COPILOT_LOCALE = "zh-cn"
 COPILOT_MARKET = "en-us"
 COPILOT_TIMEZONE = "Asia/Shanghai"
+COPILOT_DISABLE_MEMORY = "true"
 
 # Optional: persist refreshed Microsoft refresh tokens.
 # Create with:

@@ -9,6 +9,7 @@ Implemented endpoints:
 - `POST /v1/chat/completions`
 - `POST /v1/responses`
 - `POST /v1/images/generations`
+- `GET /v1/copilot/image`
 
 No captured token or cookie is stored in this repo.
 
@@ -220,6 +221,14 @@ curl https://YOUR-WORKER.workers.dev/v1/images/generations \
     "response_format": "url"
   }'
 ```
+
+Generated image URLs are Worker-proxied by default, including image markdown in
+Chat Completions/Responses and URL results from `/v1/images/generations`. This
+avoids exposing short-lived Microsoft Designer URLs directly, and helps when
+Designer rejects direct browser opens because of origin/referer checks. The
+image proxy is limited to known Microsoft image hosts. Use
+`response_format: "b64_json"` if you want the Worker to fetch and inline the
+image bytes in the API response.
 
 ## Deploy
 

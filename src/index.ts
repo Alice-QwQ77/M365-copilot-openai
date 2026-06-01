@@ -9,6 +9,11 @@ const DEFAULT_REFRESH_TOKEN_KV_KEY = "copilot_refresh_token";
 const DEFAULT_REDIS_TOKEN_KEY = "copilot_tokens";
 const DEFAULT_REDIS_LOCK_KEY = "copilot_tokens_lock";
 const DEFAULT_REDIS_LOCK_TTL_MS = 10_000;
+const ALLOWED_IMAGE_PROXY_HOSTS = [
+  "designerapp.officeapps.live.com",
+  "designerapp.microsoft.com",
+  "substrate.office.com",
+];
 const UPLOAD_IMAGE_OPTIONS_SETS = [
   "cwcgptvsan",
   "flux_v3_gptv_enable_upload_multi_image_in_turn_wo_ch",
@@ -261,6 +266,7 @@ type CopilotRunOptions = {
   conversationId?: string;
   imageInputs?: CopilotImageInput[];
   disableMemory?: boolean;
+  imageUrlFormatter?: (url: string) => string;
   onDelta?: (delta: string) => void | Promise<void>;
 };
 
@@ -430,25 +436,29 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (url.pathname === "/v1/chat/completions" && request.method === "POST") {
     requireInboundAuth(request, env);
     const body = await readJson<ChatCompletionRequest>(request);
-    return chatCompletions(body, env);
+    return chatCompletions(body, env, request);
   }
 
   if (url.pathname === "/v1/responses" && request.method === "POST") {
     requireInboundAuth(request, env);
     const body = await readJson<ResponsesRequest>(request);
-    return responses(body, env);
+    return responses(body, env, request);
   }
 
   if (url.pathname === "/v1/images/generations" && request.method === "POST") {
     requireInboundAuth(request, env);
     const body = await readJson<ImagesGenerationRequest>(request);
-    return imageGenerations(body, env);
+    return imageGenerations(body, env, request);
+  }
+
+  if (url.pathname === "/v1/copilot/image" && request.method === "GET") {
+    return proxyCopilotImage(url, env);
   }
 
   return errorResponse(404, "Not found", "not_found");
 }
 
-async function chatCompletions(body: ChatCompletionRequest, env: Env): Promise<Response> {
+async function chatCompletions(body: ChatCompletionRequest, env: Env, request: Request): Promise<Response> {
   if (!Array.isArray(body.messages) || body.messages.length === 0) {
     throw new HttpError(400, "`messages` must be a non-empty array");
   }
@@ -458,13 +468,28 @@ async function chatCompletions(body: ChatCompletionRequest, env: Env): Promise<R
   const prompt = messagesToPrompt(body.messages);
   const imageInputs = extractChatImages(body.messages);
   const disableMemory = requestDisablesMemory(body, env);
+  const imageUrlFormatter = (url: string) => proxiedImageUrl(request, url);
 
   if (body.stream) {
-    return streamChatCompletion({ prompt: prompt || "Describe the image.", model, tone, imageInputs, disableMemory }, env);
+    return streamChatCompletion({
+      prompt: prompt || "Describe the image.",
+      model,
+      tone,
+      imageInputs,
+      disableMemory,
+      imageUrlFormatter,
+    }, env);
   }
 
-  const result = await runCopilotChat({ prompt: prompt || "Describe the image.", model, tone, imageInputs, disableMemory }, env);
-  const content = formatCopilotOutput(result);
+  const result = await runCopilotChat({
+    prompt: prompt || "Describe the image.",
+    model,
+    tone,
+    imageInputs,
+    disableMemory,
+    imageUrlFormatter,
+  }, env);
+  const content = formatCopilotOutput(result, imageUrlFormatter);
   const created = unixSeconds();
   const id = `chatcmpl-${crypto.randomUUID()}`;
 
@@ -487,7 +512,7 @@ async function chatCompletions(body: ChatCompletionRequest, env: Env): Promise<R
   });
 }
 
-async function responses(body: ResponsesRequest, env: Env): Promise<Response> {
+async function responses(body: ResponsesRequest, env: Env, request: Request): Promise<Response> {
   const model = body.model || env.DEFAULT_MODEL || "copilot-5.5-fast-response";
   const tone = modelToTone(model);
   const prompt = responsesInputToPrompt(body);
@@ -497,20 +522,37 @@ async function responses(body: ResponsesRequest, env: Env): Promise<Response> {
   }
   const resolvedPrompt = prompt || "Describe the image.";
   const disableMemory = requestDisablesMemory(body, env);
+  const imageUrlFormatter = (url: string) => proxiedImageUrl(request, url);
 
   const state = conversationStateFromResponseId(body.previous_response_id, env);
   const id = responseIdFromConversationState(state);
 
   if (body.stream) {
-    return streamResponseApi({ prompt: resolvedPrompt, model, tone, ...state, imageInputs, disableMemory }, env, id);
+    return streamResponseApi({
+      prompt: resolvedPrompt,
+      model,
+      tone,
+      ...state,
+      imageInputs,
+      disableMemory,
+      imageUrlFormatter,
+    }, env, id);
   }
 
-  const result = await runCopilotChat({ prompt: resolvedPrompt, model, tone, ...state, imageInputs, disableMemory }, env);
-  const outputText = formatCopilotOutput(result);
+  const result = await runCopilotChat({
+    prompt: resolvedPrompt,
+    model,
+    tone,
+    ...state,
+    imageInputs,
+    disableMemory,
+    imageUrlFormatter,
+  }, env);
+  const outputText = formatCopilotOutput(result, imageUrlFormatter);
   return jsonResponse(responseObject(id, model, outputText, resolvedPrompt));
 }
 
-async function imageGenerations(body: ImagesGenerationRequest, env: Env): Promise<Response> {
+async function imageGenerations(body: ImagesGenerationRequest, env: Env, request: Request): Promise<Response> {
   const prompt = body.prompt?.trim();
   if (!prompt) {
     throw new HttpError(400, "`prompt` must contain text");
@@ -534,7 +576,7 @@ async function imageGenerations(body: ImagesGenerationRequest, env: Env): Promis
         b64_json: await imageUrlToBase64(image.url),
       };
     }
-    return { url: image.url };
+    return { url: proxiedImageUrl(request, image.url) };
   }));
 
   return jsonResponse({
@@ -677,12 +719,20 @@ function streamResponseApi(options: CopilotRunOptions, env: Env, id: string): Re
   });
 }
 
-function formatCopilotOutput(result: CopilotRunResult): string {
-  return [result.text, formatImageMarkdown(result.images)].filter(Boolean).join("\n\n");
+function formatCopilotOutput(result: CopilotRunResult, imageUrlFormatter?: (url: string) => string): string {
+  return [result.text, formatImageMarkdown(result.images, imageUrlFormatter)].filter(Boolean).join("\n\n");
 }
 
-function formatImageMarkdown(images: CopilotImage[]): string {
-  return images.map((image) => `![generated image](${image.url})`).join("\n");
+function formatImageMarkdown(images: CopilotImage[], imageUrlFormatter?: (url: string) => string): string {
+  return images.map((image) => `![generated image](${imageUrlFormatter?.(image.url) || image.url})`).join("\n");
+}
+
+function proxiedImageUrl(request: Request, imageUrl: string): string {
+  const url = new URL(request.url);
+  url.pathname = "/v1/copilot/image";
+  url.search = "";
+  url.searchParams.set("url", imageUrl);
+  return url.toString();
 }
 
 function requestDisablesMemory(
@@ -730,7 +780,7 @@ async function runCopilotChat(options: CopilotRunOptions, env: Env): Promise<Cop
       }
     }
     if (added.length > 0) {
-      await options.onDelta?.(formatImageMarkdown(added));
+      await options.onDelta?.(formatImageMarkdown(added, options.imageUrlFormatter));
     }
   };
 
@@ -1208,11 +1258,67 @@ async function imageInputToDataUrl(image: CopilotImageInput): Promise<string> {
 }
 
 async function imageUrlToBase64(url: string): Promise<string> {
-  const response = await fetch(url);
+  const response = await fetchCopilotImage(url);
   if (!response.ok) {
     throw new Error(`Failed to fetch generated image: HTTP ${response.status}`);
   }
   return bytesToBase64(new Uint8Array(await response.arrayBuffer()));
+}
+
+async function proxyCopilotImage(url: URL, env: Env): Promise<Response> {
+  const target = url.searchParams.get("url");
+  if (!target) {
+    throw new HttpError(400, "`url` is required");
+  }
+  assertAllowedImageProxyUrl(target);
+
+  const upstream = await fetchCopilotImage(target, env);
+  if (!upstream.ok) {
+    const text = await upstream.text().catch(() => "");
+    throw new HttpError(
+      upstream.status,
+      `Failed to fetch generated image: HTTP ${upstream.status}${text ? ` ${redactSecrets(text)}` : ""}`,
+      "server_error",
+    );
+  }
+
+  return new Response(upstream.body, {
+    status: upstream.status,
+    headers: {
+      ...corsHeaders(),
+      "content-type": upstream.headers.get("content-type") || "image/png",
+      "cache-control": "private, max-age=300",
+    },
+  });
+}
+
+async function fetchCopilotImage(url: string, env?: Env): Promise<Response> {
+  assertAllowedImageProxyUrl(url);
+  return fetch(url, {
+    headers: {
+      accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+      origin: env?.COPILOT_ORIGIN || DEFAULT_UPSTREAM_ORIGIN,
+      referer: `${env?.COPILOT_ORIGIN || DEFAULT_UPSTREAM_ORIGIN}/`,
+      "user-agent": DEFAULT_USER_AGENT,
+    },
+  });
+}
+
+function assertAllowedImageProxyUrl(url: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new HttpError(400, "`url` must be a valid URL");
+  }
+
+  if (parsed.protocol !== "https:") {
+    throw new HttpError(400, "Only https image URLs can be proxied");
+  }
+
+  if (!ALLOWED_IMAGE_PROXY_HOSTS.includes(parsed.hostname.toLowerCase())) {
+    throw new HttpError(400, "Image proxy host is not allowed");
+  }
 }
 
 function normalizeFileType(fileType: string | undefined): string {

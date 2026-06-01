@@ -170,6 +170,9 @@ type Env = {
   COPILOT_TOKEN_RESOURCE?: string;
   COPILOT_TOKEN_SCOPE?: string;
   COPILOT_TOKEN_REDIRECT_URI?: string;
+  COPILOT_TOKEN_BRK_CLIENT_ID?: string;
+  COPILOT_TOKEN_BRK_REDIRECT_URI?: string;
+  COPILOT_ANCHOR_MAILBOX?: string;
   COPILOT_USER_ID?: string;
   COPILOT_TENANT_ID?: string;
   COPILOT_SESSION_ID?: string;
@@ -1046,20 +1049,36 @@ async function redisCommand<T = unknown>(config: RedisConfig, command: Array<str
 async function requestCopilotAccessToken(env: Env, refreshToken: string): Promise<AccessToken> {
   const tenant = env.COPILOT_TOKEN_TENANT || env.COPILOT_TENANT_ID || "organizations";
   const tokenResource = env.COPILOT_TOKEN_RESOURCE || DEFAULT_TOKEN_RESOURCE;
+  const clientId = env.COPILOT_CLIENT_ID || DEFAULT_COPILOT_CLIENT_ID;
+  const redirectUri = env.COPILOT_TOKEN_REDIRECT_URI || DEFAULT_TOKEN_REDIRECT_URI;
   const body = new URLSearchParams({
-    client_id: env.COPILOT_CLIENT_ID || DEFAULT_COPILOT_CLIENT_ID,
+    client_id: clientId,
     grant_type: "refresh_token",
     refresh_token: refreshToken,
     scope: env.COPILOT_TOKEN_SCOPE || `${tokenResource}/.default openid profile offline_access`,
-    redirect_uri: env.COPILOT_TOKEN_REDIRECT_URI || DEFAULT_TOKEN_REDIRECT_URI,
+    redirect_uri: redirectUri,
     client_info: "1",
   });
+  const brkClientId = env.COPILOT_TOKEN_BRK_CLIENT_ID || "4765445b-32c6-49b0-83e6-1d93765276ca";
+  const brkRedirectUri = env.COPILOT_TOKEN_BRK_REDIRECT_URI || "https://m365.cloud.microsoft/spalanding";
+  if (clientId === DEFAULT_COPILOT_CLIENT_ID) {
+    body.set("brk_client_id", brkClientId);
+    body.set("brk_redirect_uri", brkRedirectUri);
+    body.set("x-ms-lib-capability", "retry-after, h429");
+    body.set("x-client-SKU", "msal.js.browser");
+    body.set("x-client-VER", "4.28.2");
+    const anchorMailbox = env.COPILOT_ANCHOR_MAILBOX;
+    if (anchorMailbox) {
+      body.set("X-AnchorMailbox", anchorMailbox);
+    }
+  }
 
   const response = await fetch(`https://login.microsoftonline.com/${tenant}/oauth2/v2.0/token`, {
     method: "POST",
     headers: {
       "content-type": "application/x-www-form-urlencoded",
       "user-agent": DEFAULT_USER_AGENT,
+      origin: env.COPILOT_ORIGIN || DEFAULT_UPSTREAM_ORIGIN,
     },
     body,
   });

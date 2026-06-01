@@ -10,6 +10,9 @@ COPILOT_MARKET = "en-us"
 COPILOT_TIMEZONE = "Asia/Shanghai"
 COPILOT_DISABLE_MEMORY = "true"
 
+[triggers]
+crons = ["17 3 * * *"]
+
 # Optional: persist refreshed Microsoft refresh tokens.
 # Create with:
 #   npx wrangler kv namespace create COPILOT_TOKEN_KV

@@ -402,6 +402,10 @@ export default {
       return errorResponse(500, message, "server_error");
     }
   },
+
+  async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(refreshCopilotAccessTokenWithLock(env).then((token) => storeCopilotTokens(env, token)));
+  },
 };
 
 async function route(request: Request, env: Env): Promise<Response> {

@@ -81,6 +81,11 @@ Stored Redis value:
 The Worker uses `SET lock NX PX` before refreshing. If another isolate is
 already refreshing, it waits briefly for Redis to receive the new access token.
 
+The deployment also includes a daily cron trigger. It refreshes the Copilot
+token once per day and writes the returned access/refresh token bundle back to
+Redis. Normal requests still refresh on demand if the cached access token is
+expired.
+
 KV is still supported as a legacy backup for the refresh token through the
 `COPILOT_TOKEN_KV` binding, but Redis should be the authority when Upstash is
 configured.
